@@ -180,6 +180,7 @@ namespace Cyber_behaviour_profiling
         public static InvestigationResult InvestigateDirectoryChanges(
             DirectorySnapshot? before, DirectorySnapshot? after,
             IReadOnlyList<string>? sensitiveDirs = null,
+            ISet<string>? relevantPaths = null,
             int depth = 0)
         {
             var result = new InvestigationResult();
@@ -189,6 +190,7 @@ namespace Cyber_behaviour_profiling
 
             foreach (var file in diff.NewFiles)
             {
+                if (!IsRelevantArtifactPath(file.FullPath, relevantPaths)) continue;
                 if (IsNoise(file.FullPath)) continue;
 
                 string ext  = Path.GetExtension(file.FullPath).ToLowerInvariant();
@@ -262,6 +264,7 @@ namespace Cyber_behaviour_profiling
 
             foreach (var file in diff.ModifiedFiles)
             {
+                if (!IsRelevantArtifactPath(file.FullPath, relevantPaths)) continue;
                 if (IsNoise(file.FullPath)) continue;
 
                 string ext = Path.GetExtension(file.FullPath).ToLowerInvariant();
@@ -310,6 +313,7 @@ namespace Cyber_behaviour_profiling
 
             foreach (string path in diff.DeletedFiles)
             {
+                if (!IsRelevantArtifactPath(path, relevantPaths)) continue;
                 if (IsNoise(path)) continue;
                 string ext = Path.GetExtension(path).ToLowerInvariant();
                 if (MapToData._executableExtensions.Contains(ext))
@@ -341,6 +345,7 @@ namespace Cyber_behaviour_profiling
             ProcessProfile profile,
             DirectorySnapshot? beforeSnapshot,
             DirectorySnapshot? afterSnapshot,
+            ISet<string>? relevantPaths = null,
             int depth = 0)
         {
             var result = new InvestigationResult();
@@ -351,9 +356,14 @@ namespace Cyber_behaviour_profiling
 
             var diff = CompareSnapshots(beforeSnapshot, afterSnapshot);
 
-            var networkTime = networkEvent.Timestamp;
+            var networkTime = networkEvent.Timestamp.ToUniversalTime();
             var newFilesNearNetwork = diff.NewFiles
-                .Where(f => Math.Abs((f.LastWriteUtc - networkTime.ToUniversalTime()).TotalSeconds) < 10)
+                .Where(f => IsRelevantArtifactPath(f.FullPath, relevantPaths))
+                .Where(f =>
+                {
+                    double secondsAfterConnection = (f.LastWriteUtc - networkTime).TotalSeconds;
+                    return secondsAfterConnection >= 0 && secondsAfterConnection < 10;
+                })
                 .ToList();
             var informationalFiles = new List<FileSnapshot>();
 
@@ -466,6 +476,7 @@ namespace Cyber_behaviour_profiling
 
             var downloadDirs = GetDownloadDirectories();
             var droppedToDownloadDirs = diff.NewFiles
+                .Where(f => IsRelevantArtifactPath(f.FullPath, relevantPaths))
                 .Where(f => downloadDirs.Any(d =>
                     f.FullPath.StartsWith(d, StringComparison.OrdinalIgnoreCase)))
                 .Where(f => !IsNoise(f.FullPath))
@@ -603,6 +614,9 @@ namespace Cyber_behaviour_profiling
                 ? trimmed[..detailIndex].ToLowerInvariant()
                 : trimmed.ToLowerInvariant();
         }
+
+        private static bool IsRelevantArtifactPath(string path, ISet<string>? relevantPaths) =>
+            relevantPaths == null || relevantPaths.Contains(path);
 
         private static bool IsNoise(string path)
         {

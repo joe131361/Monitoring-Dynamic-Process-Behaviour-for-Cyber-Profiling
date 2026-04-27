@@ -73,6 +73,7 @@ public class ProcessProfile
     public string ProcessName { get; set; }
     public DateTime FirstSeen { get; set; }
     public DateTime SpawnedAt { get; set; } = DateTime.MinValue;
+    public bool ProcessExitObserved { get; set; }
     public DateTime LastAnalyzed { get; set; } = DateTime.MinValue;
     public int ParentProcessIdAtSpawn { get; set; }
     public string ParentProcessNameAtSpawn { get; set; } = "";
@@ -84,6 +85,10 @@ public class ProcessProfile
     public ConcurrentDictionary<string, int> WriteDirectories { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public ConcurrentDictionary<string, byte> ExeDropPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public ConcurrentDictionary<string, byte> RuntimeArtifactPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, byte> RansomNotePaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, byte> StagingArtifactPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, byte> EncryptedTargetPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool LsassEnumerationAttempted { get; set; }
     public ConcurrentBag<string> DeletedPaths { get; set; } = new();
     public ConcurrentBag<string> DeletedRuntimeArtifacts { get; set; } = new();
     public ConcurrentBag<SpawnedProcess> SpawnedCommandLines { get; set; } = new();
@@ -133,6 +138,12 @@ public class FileOperationsData
     public List<string> noise_paths { get; set; }
     public List<string> malware_artifacts { get; set; }
     public List<string> browser_credential_dirs { get; set; }
+    public List<string> ransom_note_name_patterns { get; set; }
+    public List<string> ransom_note_extensions { get; set; }
+    public List<string> chunk_artifact_name_patterns { get; set; }
+    public List<string> staging_archive_extensions { get; set; }
+    public List<string> staging_archive_stems { get; set; }
+    public List<string> encrypted_target_extensions { get; set; }
 }
 
 public class RegistryData
@@ -409,6 +420,77 @@ public static class MapToData
         return _runtimeArtifactMarkers.Any(marker => lowerPath.Contains(marker));
     }
 
+    private static Regex _ransomNoteNamePattern = BuildAlternationRegex(Array.Empty<string>());
+
+    private static HashSet<string> _ransomNoteExtensions = new(StringComparer.OrdinalIgnoreCase);
+
+    private static Regex _chunkArtifactPattern = BuildAlternationRegex(Array.Empty<string>());
+
+    private static HashSet<string> _stagingArchiveExtensions = new(StringComparer.OrdinalIgnoreCase);
+
+    private static string[] _stagingArchiveStems = Array.Empty<string>();
+
+    private static HashSet<string> _encryptedTargetExtensions = new(StringComparer.OrdinalIgnoreCase);
+
+    private static Regex BuildAlternationRegex(IEnumerable<string> fragments)
+    {
+        var patternList = fragments
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .ToList();
+
+        if (patternList.Count == 0)
+            return new Regex("a^", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        return new Regex(
+            $"^(?:{string.Join("|", patternList)})",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    }
+
+    public static bool IsRansomNoteFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        string ext = Path.GetExtension(fileName);
+        if (!_ransomNoteExtensions.Contains(ext))
+            return false;
+
+        string stem = Path.GetFileNameWithoutExtension(fileName);
+        return _ransomNoteNamePattern.IsMatch(stem);
+    }
+
+    public static bool IsStagingArchiveFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        string ext = Path.GetExtension(fileName);
+        if (!_stagingArchiveExtensions.Contains(ext))
+            return false;
+
+        string stem = Path.GetFileNameWithoutExtension(fileName).ToLowerInvariant();
+        return _stagingArchiveStems.Any(s => stem.Contains(s));
+    }
+
+    public static bool IsChunkArtifactFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        string stem = Path.GetFileNameWithoutExtension(fileName);
+        return _chunkArtifactPattern.IsMatch(stem);
+    }
+
+    public static bool IsEncryptedTargetFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        string ext = Path.GetExtension(fileName);
+        return _encryptedTargetExtensions.Contains(ext);
+    }
+
     private static void RecordSnapshotObservation(
         ProcessProfile profile, DateTime timestamp, string eventType, string category, string rawData)
     {
@@ -573,6 +655,23 @@ public static class MapToData
             StringComparer.OrdinalIgnoreCase);
         _browserCredentialDirs = data.file_operations?.browser_credential_dirs?
             .Select(s => s.ToLowerInvariant()).ToList() ?? new();
+        _ransomNoteNamePattern = BuildAlternationRegex(
+            data.file_operations?.ransom_note_name_patterns ?? new List<string>());
+        _ransomNoteExtensions = new HashSet<string>(
+            data.file_operations?.ransom_note_extensions ?? new List<string>(),
+            StringComparer.OrdinalIgnoreCase);
+        _chunkArtifactPattern = BuildAlternationRegex(
+            data.file_operations?.chunk_artifact_name_patterns ?? new List<string>());
+        _stagingArchiveExtensions = new HashSet<string>(
+            data.file_operations?.staging_archive_extensions ?? new List<string>(),
+            StringComparer.OrdinalIgnoreCase);
+        _stagingArchiveStems = (data.file_operations?.staging_archive_stems ?? new List<string>())
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.ToLowerInvariant())
+            .ToArray();
+        _encryptedTargetExtensions = new HashSet<string>(
+            data.file_operations?.encrypted_target_extensions ?? new List<string>(),
+            StringComparer.OrdinalIgnoreCase);
         _safeServices = data.registry?.safe_services?
             .Select(s => s.ToLowerInvariant()).ToList() ?? new();
         _officeApps = new HashSet<string>(
@@ -666,6 +765,13 @@ public static class MapToData
                 profile.TotalPayloadLikeWrites++;
                 profile.ExeDropPaths.TryAdd(filePath, 0);
             }
+
+            if (IsRansomNoteFileName(fileName))
+                profile.RansomNotePaths.TryAdd(filePath, 0);
+            else if (IsStagingArchiveFileName(fileName) || IsChunkArtifactFileName(fileName))
+                profile.StagingArtifactPaths.TryAdd(filePath, 0);
+            else if (IsEncryptedTargetFileName(fileName))
+                profile.EncryptedTargetPaths.TryAdd(filePath, 0);
         }
 
         if (eventType == "FileDelete")
@@ -758,8 +864,9 @@ public static class MapToData
 
         if (rule.Pattern == "system\\currentcontrolset\\services")
         {
-            if (operation == "Open" || _safeServices.Any(s => lowerKey.Contains(s)))
-               return;
+            bool isWrite = operation is "SetValue" or "Create" or "DeleteValue" or "Delete";
+            if (!isWrite || _safeServices.Any(s => lowerKey.Contains(s)))
+                return;
         }
 
         AddEventToProfile(pid, processName, "Registry", rule.Pattern, registryKey, rule.Category, "Registry");

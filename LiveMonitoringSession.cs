@@ -115,6 +115,7 @@ namespace Cyber_behaviour_profiling
                         uint pid = (uint)process.Id;
                         _monitoredPids.Add(pid);
                         _pidToTarget[pid] = name;
+                        RegisterMonitoredTarget(process.Id, name, TryReadProcessImagePath(process));
                     }
 
                 _powerShellLoggingEnabled = enablePowerShellLogging;
@@ -183,6 +184,8 @@ namespace Cyber_behaviour_profiling
             _userThread = null;
             _dnsThread = null;
             _psThread = null;
+            _monitoredPids.Clear();
+            _childPidToParentPid.Clear();
             _pidToTarget.Clear();
 
             if (ActiveInstance == this)
@@ -324,6 +327,11 @@ namespace Cyber_behaviour_profiling
                             FirstSeen = DateTime.Now
                         });
                     }
+                };
+
+                _kernelSession.Source.Kernel.ProcessStop += data =>
+                {
+                    MarkProcessExited(data.ProcessID);
                 };
 
                 _kernelThread = new Thread(() => _kernelSession.Source.Process()) { IsBackground = true };
@@ -531,6 +539,24 @@ namespace Cyber_behaviour_profiling
                 }
             };
 
+            _kernelSession.Source.Kernel.RegistryDeleteValue += data =>
+            {
+                if (ShouldMonitor(data.ProcessName, (uint)data.ProcessID))
+                {
+                    FireActivity("Registry", data.KeyName ?? "", data.ProcessName ?? "", data.ProcessID);
+                    MapToData.EvaluateRegistryAccess(data.ProcessID, data.ProcessName ?? "", data.KeyName ?? "", "DeleteValue");
+                }
+            };
+
+            _kernelSession.Source.Kernel.RegistryDelete += data =>
+            {
+                if (ShouldMonitor(data.ProcessName, (uint)data.ProcessID))
+                {
+                    FireActivity("Registry", data.KeyName ?? "", data.ProcessName ?? "", data.ProcessID);
+                    MapToData.EvaluateRegistryAccess(data.ProcessID, data.ProcessName ?? "", data.KeyName ?? "", "Delete");
+                }
+            };
+
             _kernelSession.Source.Kernel.TcpIpConnect += data =>
             {
                 if (ShouldMonitor(data.ProcessName, (uint)data.ProcessID))
@@ -544,9 +570,28 @@ namespace Cyber_behaviour_profiling
 
             _kernelSession.Source.Kernel.ProcessStart += data =>
             {
-                if (_monitoredPids.Contains((uint)data.ParentID))
+                string startImagePath = data.ImageFileName ?? "";
+                string startImageName = string.IsNullOrEmpty(startImagePath)
+                    ? (data.ProcessName ?? "")
+                    : Path.GetFileName(startImagePath);
+                string startImageNoExt = Path.GetFileNameWithoutExtension(startImageName).ToLowerInvariant();
+                string startImageLower = startImageName.ToLowerInvariant();
+
+                bool isTargetByName =
+                    !string.IsNullOrEmpty(startImageNoExt) &&
+                    (_targetProcesses.Contains(startImageNoExt) || _targetProcesses.Contains(startImageLower));
+
+                if (isTargetByName)
                 {
-                    string childImagePath = data.ImageFileName ?? "";
+                    uint targetPid = (uint)data.ProcessID;
+                    _monitoredPids.Add(targetPid);
+                    _pidToTarget[targetPid] = startImageNoExt;
+                    RegisterMonitoredTarget(data.ProcessID, startImageNoExt, startImagePath);
+                }
+
+                if (_monitoredPids.Contains((uint)data.ParentID) && !isTargetByName)
+                {
+                    string childImagePath = startImagePath;
                     string childName = !string.IsNullOrEmpty(childImagePath)
                         ? Path.GetFileName(childImagePath)
                         : (data.ProcessName ?? "unknown");
@@ -565,6 +610,11 @@ namespace Cyber_behaviour_profiling
                         ? pp.ProcessName : "unknown";
                     MapToData.EvaluateProcessSpawn(data.ParentID, parentName, data.ProcessID, childName, childImagePath, data.CommandLine ?? "");
                 }
+            };
+
+            _kernelSession.Source.Kernel.ProcessStop += data =>
+            {
+                MarkProcessExited(data.ProcessID);
             };
 
             _userThread = new Thread(() => _userSession.Source.Process()) { IsBackground = true };
@@ -711,6 +761,49 @@ namespace Cyber_behaviour_profiling
             catch { }
         }
 
+        private static string? TryReadProcessImagePath(Process process)
+        {
+            try
+            {
+                string? path = process.MainModule?.FileName;
+                return string.IsNullOrWhiteSpace(path) ? null : path;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void RegisterMonitoredTarget(int pid, string targetNameNoExt, string? imagePath)
+        {
+            string processName = string.IsNullOrWhiteSpace(imagePath)
+                ? targetNameNoExt + ".exe"
+                : Path.GetFileName(imagePath);
+
+            var profile = MapToData.ActiveProfiles.GetOrAdd(pid, id => new ProcessProfile
+            {
+                ProcessId = id,
+                ProcessName = processName,
+                FirstSeen = DateTime.Now
+            });
+
+            if (!string.IsNullOrWhiteSpace(imagePath) && string.IsNullOrWhiteSpace(profile.ImagePath))
+                profile.ImagePath = imagePath;
+
+            profile.ProcessExitObserved = false;
+        }
+
+        private void MarkProcessExited(int pid)
+        {
+            uint processId = (uint)pid;
+            _monitoredPids.Remove(processId);
+            _pidToTarget.Remove(processId);
+            _childPidToParentPid.Remove(processId);
+
+            if (MapToData.ActiveProfiles.TryGetValue(pid, out var profile))
+                profile.ProcessExitObserved = true;
+        }
+
         private bool ShouldMonitor(string? processName, uint pid)
         {
             if (_monitoredPids.Contains(pid)) return true;
@@ -722,6 +815,7 @@ namespace Cyber_behaviour_profiling
                 _monitoredPids.Add(pid);
                 string target = _targetProcesses.Contains(noExt) ? noExt : lower;
                 _pidToTarget[pid] = target;
+                RegisterMonitoredTarget((int)pid, target, imagePath: null);
                 return true;
             }
             return false;

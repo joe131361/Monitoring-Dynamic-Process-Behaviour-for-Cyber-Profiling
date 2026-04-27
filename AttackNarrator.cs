@@ -29,6 +29,9 @@ namespace Cyber_behaviour_profiling
         public List<string> RuntimeArtifactFiles { get; set; } = new();
         public List<string> DeletedFiles { get; set; } = new();
         public List<string> DeletedRuntimeArtifactFiles { get; set; } = new();
+        public List<string> RansomNoteFiles { get; set; } = new();
+        public List<string> StagingArtifactFiles { get; set; } = new();
+        public List<string> EncryptedTargetFiles { get; set; } = new();
         public List<string> LaunchContext { get; set; } = new();
         public bool IsSpawnedProcess { get; set; }
         public List<SpawnedProcess> SpawnedCommands { get; set; } = new();
@@ -117,6 +120,9 @@ namespace Cyber_behaviour_profiling
                     RuntimeArtifactFiles = profile.RuntimeArtifactPaths.Keys.ToList(),
                     DeletedFiles     = profile.DeletedPaths.ToList(),
                     DeletedRuntimeArtifactFiles = profile.DeletedRuntimeArtifacts.ToList(),
+                    RansomNoteFiles  = profile.RansomNotePaths.Keys.ToList(),
+                    StagingArtifactFiles = profile.StagingArtifactPaths.Keys.ToList(),
+                    EncryptedTargetFiles = profile.EncryptedTargetPaths.Keys.ToList(),
                     LaunchContext    = launchContext,
                     IsSpawnedProcess = isSpawned,
                     SpawnedCommands  = profile.SpawnedCommandLines.ToList(),
@@ -145,6 +151,9 @@ namespace Cyber_behaviour_profiling
                 RuntimeArtifactFiles = profile.RuntimeArtifactPaths.Keys.ToList(),
                 DeletedFiles     = profile.DeletedPaths.ToList(),
                 DeletedRuntimeArtifactFiles = profile.DeletedRuntimeArtifacts.ToList(),
+                RansomNoteFiles  = profile.RansomNotePaths.Keys.ToList(),
+                StagingArtifactFiles = profile.StagingArtifactPaths.Keys.ToList(),
+                EncryptedTargetFiles = profile.EncryptedTargetPaths.Keys.ToList(),
                 LaunchContext    = launchContext,
                 IsSpawnedProcess = isSpawned,
                 SpawnedCommands  = profile.SpawnedCommandLines.ToList(),

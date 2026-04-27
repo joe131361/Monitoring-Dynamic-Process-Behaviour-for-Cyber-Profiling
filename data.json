@@ -170,6 +170,56 @@
       "\\yandex\\yandexbrowser\\",
       "\\vivaldi\\"
     ],
+    "ransom_note_name_patterns": [
+      "readme[_\\-]?(recover|decrypt|restore)",
+      "recover[_\\-]?files",
+      "how[_\\-]?to[_\\-]?(recover|decrypt|restore)",
+      "decrypt[_\\-]?(instructions|me|info)",
+      "restore[_\\-]?files",
+      "your[_\\-]?files",
+      "all[_\\-]?your[_\\-]?files"
+    ],
+    "ransom_note_extensions": [
+      ".txt",
+      ".html",
+      ".htm",
+      ".hta",
+      ".md",
+      ".rtf"
+    ],
+    "chunk_artifact_name_patterns": [
+      "(chunk|part|piece|frag(ment)?|block|seg(ment)?)[_\\-]?\\d+"
+    ],
+    "staging_archive_extensions": [
+      ".zip",
+      ".7z",
+      ".rar",
+      ".tar",
+      ".tgz",
+      ".gz",
+      ".cab",
+      ".arj"
+    ],
+    "staging_archive_stems": [
+      "loot",
+      "stolen",
+      "exfil",
+      "exfiltrate",
+      "harvest",
+      "stash",
+      "dump",
+      "collect"
+    ],
+    "encrypted_target_extensions": [
+      ".locked",
+      ".encrypted",
+      ".crypt",
+      ".crypto",
+      ".enc",
+      ".lock",
+      ".cry",
+      ".aes"
+    ],
     "malware_artifacts": [
       "mimikatz.exe", "procdump.exe", "lazagne.exe", "sharphound.exe",
       "rubeus.exe", "seatbelt.exe", "winpeas.exe", "linpeas.sh",

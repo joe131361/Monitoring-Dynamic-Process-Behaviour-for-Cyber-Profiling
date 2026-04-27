@@ -312,14 +312,18 @@ namespace Cyber_behaviour_profiling
             return hresult switch
             {
                 0x80096010 => $"File contents don't match the signed hash — tampered after signing{pub}",
+                0x800B0003 => $"File is not a recognised PE/Authenticode subject — likely truncated or fake binary{pub}",
+                0x80092002 => $"Signed-data digest is invalid — file was modified or is not a real signed binary{pub}",
+                0x80092003 => $"File is malformed and cannot be parsed for an Authenticode signature{pub}",
+                0x800B0100 => $"No digital signature found inside the file{pub}",
                 0x800B0101 => $"Signing certificate has expired{pub}",
                 0x800B0102 => $"Certificate validity period nesting is invalid{pub}",
                 0x800B0109 => $"Signed by a certificate whose root is not in the trusted store{pub}",
                 0x800B010A => $"Certificate chain is broken or contains an untrusted link{pub}",
                 0x800B0112 => $"A CA in the certificate chain is not trusted{pub}",
                 0x800B0004 => $"Signed by a publisher not on the trusted-publisher list{pub}",
-                0         => $"Signature present but chain validation failed{pub}",
-                _         => $"Signature present but Windows refused to trust it (HRESULT 0x{hresult:X8}){pub}"
+                0          => $"Signature present but chain validation failed{pub}",
+                _          => $"Authenticode trust validation failed (HRESULT 0x{hresult:X8}){pub}"
             };
         }
     }
