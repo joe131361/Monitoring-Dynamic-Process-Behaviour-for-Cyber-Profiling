@@ -4,6 +4,9 @@ A Windows process behaviour analysis tool that monitors running processes in rea
 
 ---
 
+https://github.com/user-attachments/assets/bd7e33a2-7f9a-4fff-b23c-6471c37ad1f5
+
+
 ## Requirements
 
 ### Operating System
