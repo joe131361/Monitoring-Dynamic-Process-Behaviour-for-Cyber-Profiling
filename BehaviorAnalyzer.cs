@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Cyber_behaviour_profiling
 {
@@ -2295,11 +2296,14 @@ namespace Cyber_behaviour_profiling
                    lp.Contains(@"\recycle.bin\");
         }
 
-        private static void PopulateSignatureInfo(ProcessContext ctx)
+        private static void PopulateSignatureInfo(ProcessContext ctx, string? signaturePath = null)
         {
             try
             {
-                SignatureVerificationResult verification = SignatureVerifier.VerifyFile(ctx.FilePath);
+                string verificationTarget = string.IsNullOrWhiteSpace(signaturePath)
+                    ? ctx.FilePath
+                    : signaturePath;
+                SignatureVerificationResult verification = SignatureVerifier.VerifyFile(verificationTarget);
                 ctx.HasSignature = verification.HasSignature;
                 ctx.IsSigned = verification.IsCryptographicallyValid;
                 ctx.IsTrustedPublisher = verification.IsTrustedPublisher;
@@ -2376,7 +2380,7 @@ namespace Cyber_behaviour_profiling
                         ctx.UptimeSeconds = (DateTime.Now - proc.StartTime).TotalSeconds;
 
                         ctx.IsSuspiciousPath = IsSuspiciousPath(ctx.FilePath);
-                        PopulateSignatureInfo(ctx);
+                        PopulateSignatureInfo(ctx, ResolveSignatureTargetPath(profile, ctx.FilePath));
 
                         if (ctx.AncestorChain.Count == 0)
                             ctx.AncestorChain = BuildAncestorChain(profile);
@@ -2421,7 +2425,7 @@ namespace Cyber_behaviour_profiling
 
                 if (File.Exists(ctx.FilePath))
                 {
-                    PopulateSignatureInfo(ctx);
+                    PopulateSignatureInfo(ctx, ResolveSignatureTargetPath(profile, ctx.FilePath));
                 }
             }
 
@@ -2461,7 +2465,27 @@ namespace Cyber_behaviour_profiling
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 return false;
 
-            return SignatureVerifier.VerifyFile(path).IsTrustedPublisher;
+            string verificationTarget = ResolveAppHostSiblingPath(path);
+            return SignatureVerifier.VerifyFile(verificationTarget).IsTrustedPublisher;
+        }
+
+        private static string ResolveAppHostSiblingPath(string executablePath)
+        {
+            if (string.IsNullOrWhiteSpace(executablePath) ||
+                !Path.GetExtension(executablePath).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                return executablePath;
+            }
+
+            string siblingDllPath = Path.ChangeExtension(executablePath, ".dll");
+            if (string.Equals(siblingDllPath, executablePath, StringComparison.OrdinalIgnoreCase))
+                return executablePath;
+
+            string runtimeConfigPath = Path.ChangeExtension(executablePath, ".runtimeconfig.json");
+            if (File.Exists(siblingDllPath) && File.Exists(runtimeConfigPath))
+                return siblingDllPath;
+
+            return executablePath;
         }
 
         private static (string filePath, bool isTrustedPublisher) GetParentContext(ProcessProfile profile)
@@ -2523,6 +2547,87 @@ namespace Cyber_behaviour_profiling
                 return capturedPath!;
 
             return "UNKNOWN";
+        }
+
+        internal static string ResolveSignatureTargetPath(ProcessProfile profile, string? executionPath)
+        {
+            string managedPayloadPath = ResolveManagedPayloadPath(profile, executionPath);
+            if (!string.IsNullOrWhiteSpace(managedPayloadPath))
+                return managedPayloadPath;
+
+            return executionPath ?? "";
+        }
+
+        private static string ResolveManagedPayloadPath(ProcessProfile profile, string? executionPath)
+        {
+            string launchPayloadPath = ExtractManagedPayloadPath(profile.LaunchCommandLineAtSpawn);
+            if (!string.IsNullOrWhiteSpace(launchPayloadPath))
+                return launchPayloadPath;
+
+            if (profile.InheritedCommandContexts != null)
+            {
+                foreach (var context in profile.InheritedCommandContexts)
+                {
+                    string inheritedPayloadPath = ExtractManagedPayloadPath(context.CommandLine);
+                    if (!string.IsNullOrWhiteSpace(inheritedPayloadPath))
+                        return inheritedPayloadPath;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(executionPath))
+                return "";
+
+            string sibling = ResolveAppHostSiblingPath(executionPath);
+            return string.Equals(sibling, executionPath, StringComparison.OrdinalIgnoreCase) ? "" : sibling;
+        }
+
+        private static string ExtractManagedPayloadPath(string? commandLine)
+        {
+            if (string.IsNullOrWhiteSpace(commandLine))
+                return "";
+
+            foreach (string token in TokenizeCommandLine(commandLine))
+            {
+                string candidate = Environment.ExpandEnvironmentVariables(token.Trim().Trim('"'));
+                if (!candidate.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            return "";
+        }
+
+        private static IEnumerable<string> TokenizeCommandLine(string commandLine)
+        {
+            var current = new StringBuilder();
+            bool inQuotes = false;
+
+            foreach (char ch in commandLine)
+            {
+                if (ch == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (char.IsWhiteSpace(ch) && !inQuotes)
+                {
+                    if (current.Length > 0)
+                    {
+                        yield return current.ToString();
+                        current.Clear();
+                    }
+
+                    continue;
+                }
+
+                current.Append(ch);
+            }
+
+            if (current.Length > 0)
+                yield return current.ToString();
         }
 
         private static bool MatchesObservedProcessInstance(
