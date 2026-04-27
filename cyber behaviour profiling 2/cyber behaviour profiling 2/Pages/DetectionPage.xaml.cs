@@ -938,6 +938,9 @@ namespace cyber_behaviour_profiling_2.Pages
 
                 AppendPathSection(sb, "### Runtime Artifacts Observed", narrative.RuntimeArtifactFiles);
                 AppendPathSection(sb, "### Files Dropped", narrative.DroppedFiles);
+                AppendPathSection(sb, "### Ransom Notes Created", narrative.RansomNoteFiles);
+                AppendPathSection(sb, "### Suspicious Staging Artifacts", narrative.StagingArtifactFiles);
+                AppendLimitedPathSection(sb, "Encrypted Target Files", narrative.EncryptedTargetFiles);
                 AppendLimitedPathSection(sb, "Files Deleted", narrative.DeletedFiles);
                 AppendLimitedPathSection(sb, "Runtime Artifacts Deleted", narrative.DeletedRuntimeArtifactFiles);
 
@@ -971,6 +974,9 @@ namespace cyber_behaviour_profiling_2.Pages
                 narrative.SpawnedCommands.Count > 0 ||
                 narrative.RuntimeArtifactFiles.Count > 0 ||
                 narrative.DroppedFiles.Count > 0 ||
+                narrative.RansomNoteFiles.Count > 0 ||
+                narrative.StagingArtifactFiles.Count > 0 ||
+                narrative.EncryptedTargetFiles.Count > 0 ||
                 narrative.DeletedFiles.Any(path => !IsNoisyDeletedFile(path)) ||
                 narrative.DeletedRuntimeArtifactFiles.Any(path => !IsNoisyDeletedFile(path)))
             {

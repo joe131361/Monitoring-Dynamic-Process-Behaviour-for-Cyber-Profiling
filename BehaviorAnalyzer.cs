@@ -78,7 +78,12 @@ namespace Cyber_behaviour_profiling
         RemoteThreadInjection,
         ProcessTamperingDetected,
         ReconnaissanceToolSpawning,
-        PotentialCredentialStaging
+        PotentialCredentialStaging,
+        DpapiStorageEnumeration,
+        RansomNoteDropped,
+        SuspiciousStagingArtifacts,
+        EncryptedTargetFilesDetected,
+        AttemptedLsassAccess
     }
 
     public class ChainConfirmationResult
@@ -225,6 +230,7 @@ namespace Cyber_behaviour_profiling
             checks.AddRange(CheckFileChurnBehavior(ctx, profile, browserSafeMode, installerSafeMode));
             checks.AddRange(CheckDirectoryScatter(ctx, profile));
             checks.AddRange(CheckSelfDeletion(ctx, profile, browserSafeMode));
+            checks.AddRange(CheckMaliciousArtifactPatterns(profile, events));
 
             var anomaly = AnomalyDetector.Evaluate(profile, ctx);
 
@@ -388,7 +394,7 @@ namespace Cyber_behaviour_profiling
             }
 
             var dirInvestigation = HasFileOrArtifactFootprint(profile, events)
-                ? RunDirectoryInvestigation(profile)
+                ? RunDirectoryInvestigation(profile, events)
                 : null;
             if (dirInvestigation != null && dirInvestigation.Findings.Count > 0)
             {
@@ -503,11 +509,17 @@ namespace Cyber_behaviour_profiling
             return report;
         }
 
-        private static InvestigationResult? RunDirectoryInvestigation(ProcessProfile profile)
+        private static InvestigationResult? RunDirectoryInvestigation(
+            ProcessProfile profile,
+            IReadOnlyCollection<SuspiciousEvent> events)
         {
             try
             {
                 if (profile.DirectorySnapshotBefore == null) return null;
+
+                var attributedPaths = CollectAttributedArtifactPaths(profile, events, includeDeleted: true);
+                if (attributedPaths.Count == 0)
+                    return null;
 
                 var monitoredDirs = SystemDiscovery.GetMonitoredDirectories(MapToData.SensitiveDirs as IReadOnlyList<string>);
                 var afterSnapshot = SystemDiscovery.TakeDirectorySnapshot(monitoredDirs);
@@ -515,7 +527,8 @@ namespace Cyber_behaviour_profiling
                 return SystemDiscovery.InvestigateDirectoryChanges(
                     profile.DirectorySnapshotBefore,
                     afterSnapshot,
-                    MapToData.SensitiveDirs as IReadOnlyList<string>);
+                    MapToData.SensitiveDirs as IReadOnlyList<string>,
+                    attributedPaths);
             }
             catch
             {
@@ -649,6 +662,10 @@ namespace Cyber_behaviour_profiling
                 if (networkEvents.Count == 0 || profile.DirectorySnapshotBefore == null)
                     return null;
 
+                var attributedPaths = CollectAttributedArtifactPaths(profile, events, includeDeleted: false);
+                if (attributedPaths.Count == 0)
+                    return null;
+
                 var monitoredDirs = SystemDiscovery.GetMonitoredDirectories(
                     MapToData.SensitiveDirs as IReadOnlyList<string>);
                 var afterSnapshot = SystemDiscovery.TakeDirectorySnapshot(monitoredDirs);
@@ -660,7 +677,8 @@ namespace Cyber_behaviour_profiling
                 {
                     var r = SystemDiscovery.InvestigateNetworkEvent(
                         netEvent, profile,
-                        profile.DirectorySnapshotBefore, afterSnapshot);
+                        profile.DirectorySnapshotBefore, afterSnapshot,
+                        attributedPaths);
 
                     foreach (var finding in r.Findings)
                     {
@@ -1006,6 +1024,9 @@ namespace Cyber_behaviour_profiling
 
             if (profile.ExeDropPaths.Any() ||
                 profile.RuntimeArtifactPaths.Any() ||
+                profile.RansomNotePaths.Any() ||
+                profile.StagingArtifactPaths.Any() ||
+                profile.EncryptedTargetPaths.Any() ||
                 profile.DeletedPaths.Any() ||
                 profile.DeletedRuntimeArtifacts.Any())
             {
@@ -1053,6 +1074,9 @@ namespace Cyber_behaviour_profiling
 
             if (profile.ExeDropPaths.Any() ||
                 profile.RuntimeArtifactPaths.Any() ||
+                profile.RansomNotePaths.Any() ||
+                profile.StagingArtifactPaths.Any() ||
+                profile.EncryptedTargetPaths.Any() ||
                 profile.DeletedPaths.Any() ||
                 profile.DeletedRuntimeArtifacts.Any())
             {
@@ -1062,6 +1086,55 @@ namespace Cyber_behaviour_profiling
             return events.Any(e => e.EventType is "FileWrite" or "FileRead" or "FileOpen" or "FileDelete" or
                 "FileRename" or "SensitiveDirAccess" or "UncommonWrite" or "AccessibilityProgramOverwrite" or
                 "Executable Drop" or "ContextSignal");
+        }
+
+        private static HashSet<string> CollectAttributedArtifactPaths(
+            ProcessProfile profile,
+            IReadOnlyCollection<SuspiciousEvent> events,
+            bool includeDeleted)
+        {
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            static bool IsUsablePath(string? path) =>
+                !string.IsNullOrWhiteSpace(path) && Path.IsPathRooted(path);
+
+            void AddPath(string? path)
+            {
+                if (IsUsablePath(path))
+                    paths.Add(path!);
+            }
+
+            foreach (var path in profile.ExeDropPaths.Keys)
+                AddPath(path);
+            foreach (var path in profile.RuntimeArtifactPaths.Keys)
+                AddPath(path);
+            foreach (var path in profile.RansomNotePaths.Keys)
+                AddPath(path);
+            foreach (var path in profile.StagingArtifactPaths.Keys)
+                AddPath(path);
+            foreach (var path in profile.EncryptedTargetPaths.Keys)
+                AddPath(path);
+
+            if (includeDeleted)
+            {
+                foreach (var path in profile.DeletedPaths)
+                    AddPath(path);
+                foreach (var path in profile.DeletedRuntimeArtifacts)
+                    AddPath(path);
+            }
+
+            foreach (var ev in events)
+            {
+                if (ev.EventType is not ("FileWrite" or "FileRename" or "ContextSignal" or
+                    "UncommonWrite" or "AccessibilityProgramOverwrite" or "Executable Drop"))
+                {
+                    continue;
+                }
+
+                AddPath(ev.RawData);
+            }
+
+            return paths;
         }
 
         private static List<SuspiciousCommandEvidence> CollectSuspiciousCommandEvidence(ProcessProfile profile)
@@ -1381,9 +1454,12 @@ namespace Cyber_behaviour_profiling
                 e.Category is "process_injection" or "process_tampering");
 
             bool hasSuspiciousCompanionActivity =
-                HasSuspiciousCommandContext(profile) ||
-                profile.ExeDropPaths.Any() ||
-                events.Any(e => e.Category is "registry_persistence" or "registry_defense_evasion" or "registry_privilege_escalation");
+                HasPrivilegeSensitiveCompanionActivity(ctx, events, profile);
+
+            bool hasScopedPrivilegeContext =
+                ctx.IsSuspiciousPath ||
+                ctx.ParentIsSuspicious ||
+                profile.LsassEnumerationAttempted;
 
             bool debugPrivActivelyUsed = ctx.HasDebugPriv &&
                 (hasCredentialActivity || hasInjectionOrTamperingActivity);
@@ -1392,7 +1468,8 @@ namespace Cyber_behaviour_profiling
                 hasSuspiciousCompanionActivity;
             bool debugPrivSetOnly = ctx.HasDebugPriv &&
                 !debugPrivActivelyUsed &&
-                !debugPrivSetWithSuspicion;
+                !debugPrivSetWithSuspicion &&
+                hasScopedPrivilegeContext;
 
             yield return Check(SemanticCheckId.SeDebugPrivilegeSelfEnabled,
                 debugPrivActivelyUsed,
@@ -1426,17 +1503,25 @@ namespace Cyber_behaviour_profiling
             if (isKnownSystemProgram)
                 return false;
 
-            bool treatCredentialFileAccessAsHard = !MapToData.IsKnownBrowserProcessName(profile.ProcessName);
-            bool hasHardOrCredentialSignals = HasHighRiskEventEvidence(events, treatCredentialFileAccessAsHard);
-
-            bool hasSuspiciousExecution = HasSuspiciousExecutionEvidence(events) ||
-                HasSuspiciousCommandContext(profile) ||
-                HasBehavioralRedFlag(profile, ctx, browserSafeMode: false);
-
             return ctx.IsSuspiciousPath ||
                    ctx.ParentIsSuspicious ||
-                   hasHardOrCredentialSignals ||
-                   hasSuspiciousExecution;
+                   HasPrivilegeSensitiveCompanionActivity(ctx, events, profile);
+        }
+
+        private static bool HasPrivilegeSensitiveCompanionActivity(
+            ProcessContext ctx,
+            IReadOnlyCollection<SuspiciousEvent> events,
+            ProcessProfile profile)
+        {
+            bool treatCredentialFileAccessAsHard = !MapToData.IsKnownBrowserProcessName(profile.ProcessName);
+            return HasHighRiskEventEvidence(events, treatCredentialFileAccessAsHard) ||
+                   HasSuspiciousCommandContext(profile) ||
+                   HasBehavioralRedFlag(profile, ctx, browserSafeMode: false) ||
+                   profile.ExeDropPaths.Any() ||
+                   profile.RuntimeArtifactPaths.Any() ||
+                   profile.RansomNotePaths.Any() ||
+                   profile.StagingArtifactPaths.Any() ||
+                   profile.EncryptedTargetPaths.Any();
         }
 
         internal static bool ShouldFlagUnexpectedNetworkConnections(
@@ -1604,11 +1689,15 @@ namespace Cyber_behaviour_profiling
                     or "SuspiciousCommand" or "DiscoverySpawn")
                     areas.Add("ProcessExecution");
 
-                if (ev.EventType == "DPAPI_Decrypt" ||
-                    raw.Contains("\\microsoft\\protect\\"))
+                if (ev.EventType == "DPAPI_Decrypt")
                 {
-                    areas.Add("DPAPIDecryption");
-                    AddEvidence("DPAPIDecryption", ev.RawData);
+                    areas.Add("DPAPIApiInvocation");
+                    AddEvidence("DPAPIApiInvocation", ev.RawData);
+                }
+                else if (raw.Contains("\\microsoft\\protect\\"))
+                {
+                    areas.Add("DPAPIStorageEnumeration");
+                    AddEvidence("DPAPIStorageEnumeration", ev.RawData);
                 }
             }
 
@@ -1645,8 +1734,12 @@ namespace Cyber_behaviour_profiling
                 ThreatImpact.Malicious, $"Accessed security control registry keys (AMSI/IFEO){Ev("DefenseTools")}");
 
             yield return Check(SemanticCheckId.DpapiDecryptionActivity,
-                areas.Contains("DPAPIDecryption"),
-                ThreatImpact.Malicious, $"DPAPI decryption invoked (used to extract stored credentials){Ev("DPAPIDecryption")}");
+                areas.Contains("DPAPIApiInvocation"),
+                ThreatImpact.Malicious, $"DPAPI decryption invoked (used to extract stored credentials){Ev("DPAPIApiInvocation")}");
+
+            yield return Check(SemanticCheckId.DpapiStorageEnumeration,
+                areas.Contains("DPAPIStorageEnumeration"),
+                ThreatImpact.Suspicious, $"DPAPI master-key store enumerated (no decryption call observed){Ev("DPAPIStorageEnumeration")}");
 
             int areaCount = areas.Count;
 
@@ -1908,6 +2001,104 @@ namespace Cyber_behaviour_profiling
             return null;
         }
 
+        private static IEnumerable<SemanticCheck> CheckMaliciousArtifactPatterns(
+            ProcessProfile profile,
+            IReadOnlyCollection<SuspiciousEvent> events)
+        {
+            var ransomPaths = CollectRansomNotePaths(profile, events);
+            yield return Check(SemanticCheckId.RansomNoteDropped,
+                ransomPaths.Count > 0,
+                ThreatImpact.Malicious,
+                $"Ransom-note file dropped: {string.Join(", ", ransomPaths.Take(3).Select(Path.GetFileName))}",
+                isHardIndicator: true);
+
+            var encryptedTargets = profile.EncryptedTargetPaths?.Keys?.ToList() ?? new List<string>();
+            yield return Check(SemanticCheckId.EncryptedTargetFilesDetected,
+                encryptedTargets.Count >= 3,
+                ThreatImpact.Malicious,
+                $"{encryptedTargets.Count} files written with encrypted-target extensions (.locked/.encrypted/etc.); samples: {string.Join(", ", encryptedTargets.Take(3).Select(Path.GetFileName))}",
+                isHardIndicator: true);
+
+            var stagingPaths = CollectStagingArtifactPaths(profile, events);
+            yield return Check(SemanticCheckId.SuspiciousStagingArtifacts,
+                stagingPaths.Count >= 2,
+                ThreatImpact.Suspicious,
+                $"{stagingPaths.Count} suspicious staging artifacts created (archives or numbered chunks): {string.Join(", ", stagingPaths.Take(3).Select(Path.GetFileName))}");
+
+            bool hasConfirmedLsassEvent = events.Any(e => e.EventType == "LsassAccess");
+            bool hasLsassAttempt = !hasConfirmedLsassEvent &&
+                (profile.LsassEnumerationAttempted ||
+                 profile.SpawnedCommandLines?.Any(s =>
+                    !string.IsNullOrEmpty(s.CommandLine) &&
+                    s.CommandLine.Contains("lsass", StringComparison.OrdinalIgnoreCase)) == true);
+
+            yield return Check(SemanticCheckId.AttemptedLsassAccess,
+                hasLsassAttempt,
+                ThreatImpact.Suspicious,
+                "Process referenced lsass.exe but no Sysmon-confirmed memory-access event was observed (Sysmon may be unavailable).");
+        }
+
+        private static List<string> CollectRansomNotePaths(
+            ProcessProfile profile,
+            IReadOnlyCollection<SuspiciousEvent> events)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var result = new List<string>();
+
+            void TryAdd(string? path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return;
+                if (!MapToData.IsRansomNoteFileName(Path.GetFileName(path)))
+                    return;
+                if (seen.Add(path))
+                    result.Add(path);
+            }
+
+            if (profile.RansomNotePaths != null)
+                foreach (var p in profile.RansomNotePaths.Keys)
+                    TryAdd(p);
+
+            foreach (var ev in events)
+            {
+                if (ev.EventType is "FileWrite" or "ContextSignal" or "FileRename")
+                    TryAdd(ev.RawData);
+            }
+
+            return result;
+        }
+
+        private static List<string> CollectStagingArtifactPaths(
+            ProcessProfile profile,
+            IReadOnlyCollection<SuspiciousEvent> events)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var result = new List<string>();
+
+            void TryAdd(string? path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return;
+                string fileName = Path.GetFileName(path);
+                if (!MapToData.IsStagingArchiveFileName(fileName) && !MapToData.IsChunkArtifactFileName(fileName))
+                    return;
+                if (seen.Add(path))
+                    result.Add(path);
+            }
+
+            if (profile.StagingArtifactPaths != null)
+                foreach (var p in profile.StagingArtifactPaths.Keys)
+                    TryAdd(p);
+
+            foreach (var ev in events)
+            {
+                if (ev.EventType is "FileWrite" or "ContextSignal")
+                    TryAdd(ev.RawData);
+            }
+
+            return result;
+        }
+
         private static IEnumerable<SemanticCheck> CheckSelfDeletion(
             ProcessContext ctx,
             ProcessProfile profile,
@@ -2161,48 +2352,66 @@ namespace Cyber_behaviour_profiling
             if (ctx.AncestorChain.Count > 0)
                 ctx.ParentProcess = ctx.AncestorChain[0];
 
-            try
+            ctx.ProcessExited = profile.ProcessExitObserved;
+
+            if (!ctx.ProcessExited)
             {
-                using var proc = Process.GetProcessById(pid);
-
-                ctx.FilePath = proc.MainModule?.FileName ?? "UNKNOWN";
-                ctx.HandleCount = proc.HandleCount;
-                ctx.WorkingSetMB = proc.WorkingSet64 / (1024 * 1024);
-                ctx.ThreadCount = proc.Threads.Count;
-                ctx.UptimeSeconds = (DateTime.Now - proc.StartTime).TotalSeconds;
-
-                ctx.IsSuspiciousPath = IsSuspiciousPath(ctx.FilePath);
-                PopulateSignatureInfo(ctx);
-
-                if (ctx.AncestorChain.Count == 0)
-                    ctx.AncestorChain = BuildAncestorChain(profile);
-                if (ctx.ParentProcess == "UNKNOWN")
-                    ctx.ParentProcess = ctx.AncestorChain.FirstOrDefault() ?? storedParentName ?? "UNKNOWN";
-
-                if (string.IsNullOrWhiteSpace(ctx.ParentFilePath) || ctx.ParentFilePath == "UNKNOWN")
-                    (ctx.ParentFilePath, ctx.ParentIsTrustedPublisher) = GetParentContext(profile);
-                if (!string.IsNullOrWhiteSpace(ctx.ParentFilePath) && ctx.ParentFilePath != "UNKNOWN")
-                    ctx.ParentIsSuspicious = IsSuspiciousPath(ctx.ParentFilePath);
-
-                using var searcher = new ManagementObjectSearcher($"SELECT * FROM Win32_Process WHERE ProcessId = {pid}");
-                foreach (ManagementObject obj in searcher.Get())
-                    try { ctx.IsConsoleApp = obj["WindowStyle"]?.ToString() == "0"; } catch { }
-
                 try
                 {
-                    using var netSearcher = new ManagementObjectSearcher(
-                        @"root\StandardCimv2",
-                        $"SELECT * FROM MSFT_NetTCPConnection WHERE OwningProcess = {pid}");
-                    var conns = netSearcher.Get();
-                    ctx.NetworkConnCount = conns.Count;
-                    ctx.HasNetworkConns = ctx.NetworkConnCount > 0;
-                }
-                catch { }
+                    using var proc = Process.GetProcessById(pid);
 
-                ctx.HasDebugPriv = CheckDebugPrivilege(proc.Handle);
-                ctx.IsElevated = CheckIsElevated(proc.Handle);
+                    string mainModulePath = "";
+                    try { mainModulePath = proc.MainModule?.FileName ?? ""; } catch { }
+
+                    if (!MatchesObservedProcessInstance(proc, profile, etwImagePath, mainModulePath))
+                    {
+                        ctx.ProcessExited = true;
+                    }
+                    else
+                    {
+                        ctx.FilePath = ResolvePreferredImagePath(etwImagePath, mainModulePath);
+                        ctx.HandleCount = proc.HandleCount;
+                        ctx.WorkingSetMB = proc.WorkingSet64 / (1024 * 1024);
+                        ctx.ThreadCount = proc.Threads.Count;
+                        ctx.UptimeSeconds = (DateTime.Now - proc.StartTime).TotalSeconds;
+
+                        ctx.IsSuspiciousPath = IsSuspiciousPath(ctx.FilePath);
+                        PopulateSignatureInfo(ctx);
+
+                        if (ctx.AncestorChain.Count == 0)
+                            ctx.AncestorChain = BuildAncestorChain(profile);
+                        if (ctx.ParentProcess == "UNKNOWN")
+                            ctx.ParentProcess = ctx.AncestorChain.FirstOrDefault() ?? storedParentName ?? "UNKNOWN";
+
+                        if (string.IsNullOrWhiteSpace(ctx.ParentFilePath) || ctx.ParentFilePath == "UNKNOWN")
+                            (ctx.ParentFilePath, ctx.ParentIsTrustedPublisher) = GetParentContext(profile);
+                        if (!string.IsNullOrWhiteSpace(ctx.ParentFilePath) && ctx.ParentFilePath != "UNKNOWN")
+                            ctx.ParentIsSuspicious = IsSuspiciousPath(ctx.ParentFilePath);
+
+                        using var searcher = new ManagementObjectSearcher($"SELECT * FROM Win32_Process WHERE ProcessId = {pid}");
+                        foreach (ManagementObject obj in searcher.Get())
+                            try { ctx.IsConsoleApp = obj["WindowStyle"]?.ToString() == "0"; } catch { }
+
+                        try
+                        {
+                            using var netSearcher = new ManagementObjectSearcher(
+                                @"root\StandardCimv2",
+                                $"SELECT * FROM MSFT_NetTCPConnection WHERE OwningProcess = {pid}");
+                            var conns = netSearcher.Get();
+                            ctx.NetworkConnCount = conns.Count;
+                            ctx.HasNetworkConns = ctx.NetworkConnCount > 0;
+                        }
+                        catch { }
+
+                        ctx.HasDebugPriv = CheckDebugPrivilege(proc.Handle);
+                        ctx.IsElevated = CheckIsElevated(proc.Handle);
+                    }
+                }
+                catch
+                {
+                    ctx.ProcessExited = true;
+                }
             }
-            catch { }
 
             if (ctx.FilePath == "UNKNOWN" && !string.IsNullOrEmpty(etwImagePath))
             {
@@ -2283,6 +2492,97 @@ namespace Cyber_behaviour_profiling
             }
             catch { }
             return ("", false);
+        }
+
+        private static readonly HashSet<string> _hostExecutableNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "dotnet.exe", "dotnet", "java.exe", "java", "python.exe", "python", "pythonw.exe",
+            "node.exe", "node", "ruby.exe", "ruby", "perl.exe", "perl", "wsl.exe", "wsl"
+        };
+
+        private static bool IsHostExecutablePath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+            string fileName = Path.GetFileName(path);
+            return _hostExecutableNames.Contains(fileName);
+        }
+
+        internal static string ResolvePreferredImagePath(string? capturedPath, string? mainModulePath)
+        {
+            bool capturedValid = !string.IsNullOrWhiteSpace(capturedPath);
+            bool mainModuleValid = !string.IsNullOrWhiteSpace(mainModulePath);
+
+            if (capturedValid && mainModuleValid && IsHostExecutablePath(mainModulePath) && !IsHostExecutablePath(capturedPath))
+                return capturedPath!;
+
+            if (mainModuleValid)
+                return mainModulePath!;
+
+            if (capturedValid)
+                return capturedPath!;
+
+            return "UNKNOWN";
+        }
+
+        private static bool MatchesObservedProcessInstance(
+            Process proc,
+            ProcessProfile profile,
+            string? capturedPath,
+            string? mainModulePath)
+        {
+            var expectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            static void AddName(HashSet<string> sink, string? candidate)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    return;
+
+                string fileName = Path.GetFileName(candidate);
+                if (!string.IsNullOrWhiteSpace(fileName))
+                {
+                    sink.Add(fileName);
+                    sink.Add(Path.GetFileNameWithoutExtension(fileName));
+                    return;
+                }
+
+                sink.Add(candidate);
+            }
+
+            AddName(expectedNames, profile.ProcessName);
+            AddName(expectedNames, capturedPath);
+
+            if (expectedNames.Count > 0)
+            {
+                string liveName = proc.ProcessName;
+                string liveImageName = Path.GetFileName(mainModulePath ?? "");
+
+                bool matchesExpectedName =
+                    expectedNames.Contains(liveName) ||
+                    expectedNames.Contains(liveName + ".exe") ||
+                    (!string.IsNullOrWhiteSpace(liveImageName) &&
+                        (expectedNames.Contains(liveImageName) ||
+                         expectedNames.Contains(Path.GetFileNameWithoutExtension(liveImageName))));
+
+                if (!matchesExpectedName)
+                    return false;
+            }
+
+            DateTime observedStart = profile.SpawnedAt != DateTime.MinValue
+                ? profile.SpawnedAt
+                : profile.FirstSeen;
+
+            if (observedStart == DateTime.MinValue)
+                return true;
+
+            try
+            {
+                return proc.StartTime <= observedStart.AddSeconds(2);
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static string ResolveStoredImagePath(ProcessProfile profile)
@@ -2535,6 +2835,11 @@ namespace Cyber_behaviour_profiling
             SemanticCheckId.LsassMemoryAccess => "LSASS Memory Access",
             SemanticCheckId.RemoteThreadInjection => "Remote Thread Injection",
             SemanticCheckId.ProcessTamperingDetected => "Process Tampering Detected",
+            SemanticCheckId.DpapiStorageEnumeration => "DPAPI Storage Enumeration",
+            SemanticCheckId.RansomNoteDropped => "Ransom Note Dropped",
+            SemanticCheckId.SuspiciousStagingArtifacts => "Suspicious Staging Artifacts",
+            SemanticCheckId.EncryptedTargetFilesDetected => "Encrypted Target Files Detected",
+            SemanticCheckId.AttemptedLsassAccess => "Attempted LSASS Access",
             _ => id.ToString()
         };
 

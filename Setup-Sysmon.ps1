@@ -25,7 +25,7 @@ function Write-Ok    { param($msg) Write-Host "    [+] $msg" -ForegroundColor Gr
 function Write-Warn  { param($msg) Write-Host "    [!] $msg" -ForegroundColor Yellow }
 function Write-Fail  { param($msg) Write-Host "    [-] $msg" -ForegroundColor Red }
 
-# ── 1. Locate or download the Sysmon executable ───────────────────────────────
+# -- 1. Locate or download the Sysmon executable ---------------------------------
 Write-Step "Locating Sysmon"
 
 $sysmonExe = $null
@@ -48,7 +48,7 @@ if ($SysmonPath -and (Test-Path $SysmonPath)) {
 }
 
 if (-not $sysmonExe) {
-    Write-Warn "Sysmon not found — downloading from Sysinternals..."
+    Write-Warn "Sysmon not found - downloading from Sysinternals..."
 
     $downloadUrl = "https://download.sysinternals.com/files/Sysmon.zip"
     $zipPath     = "$env:TEMP\Sysmon.zip"
@@ -85,7 +85,17 @@ if (-not $sysmonExe) {
 
 Write-Ok "Found: $sysmonExe"
 
-# ── 2. Check the Sysmon service ───────────────────────────────────────────────
+# -- 2. Verify the config file ---------------------------------------------------
+Write-Step "Verifying config file"
+
+if (-not (Test-Path $ConfigPath)) {
+    Write-Fail "Config not found at: $ConfigPath"
+    Write-Warn "Make sure sysmon-profiler.xml is in the same folder as this script."
+    exit 1
+}
+Write-Ok "Config: $ConfigPath"
+
+# -- 3. Check the Sysmon service -------------------------------------------------
 Write-Step "Checking Sysmon service"
 
 $service = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
@@ -94,41 +104,32 @@ if (-not $service) {
 }
 
 if (-not $service) {
-    Write-Warn "Sysmon service not installed — installing now..."
-    & $sysmonExe -i $ConfigPath -accepteula 2>&1 | Out-Null
+    Write-Warn "Sysmon service not installed - installing now..."
+    & $sysmonExe -i $ConfigPath -accepteula | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Fail "Installation failed (exit $LASTEXITCODE). Check that you are running as Administrator."
+        Write-Fail "Installation failed (exit $LASTEXITCODE)."
         exit 1
     }
     Write-Ok "Sysmon installed and started."
 } elseif ($service.Status -ne "Running") {
-    Write-Warn "Sysmon service exists but is not running — starting..."
+    Write-Warn "Sysmon service exists but is not running - starting..."
     Start-Service $service.Name
     Write-Ok "Service started."
 } else {
     Write-Ok "Service is running ($($service.Name))."
 }
 
-# ── 3. Verify the config file ─────────────────────────────────────────────────
-Write-Step "Verifying config file"
-
-if (-not (Test-Path $ConfigPath)) {
-    Write-Fail "Config not found at: $ConfigPath"
-    exit 1
-}
-Write-Ok "Config: $ConfigPath"
-
-# ── 4. Apply the configuration ────────────────────────────────────────────────
+# -- 4. Apply the configuration --------------------------------------------------
 Write-Step "Applying Sysmon configuration"
 
-& $sysmonExe -c $ConfigPath 2>&1 | ForEach-Object { Write-Host "    $_" }
+& $sysmonExe -c $ConfigPath | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "sysmon -c returned exit code $LASTEXITCODE"
     exit 1
 }
 Write-Ok "Configuration applied."
 
-# ── 5. Verify events are being captured ───────────────────────────────────────
+# -- 5. Verify events are being captured -----------------------------------------
 Write-Step "Verifying event log"
 
 Start-Sleep -Seconds 2
@@ -144,7 +145,6 @@ try {
 # Report which of the three profiler event IDs are configured
 Write-Step "Checking profiler event coverage"
 
-$configXml  = [xml](& $sysmonExe -s 2>&1 | Out-String)
 $eventNames = @{
     10 = "ProcessAccess (LSASS detection)"
     8  = "CreateRemoteThread (injection detection)"
@@ -153,17 +153,17 @@ $eventNames = @{
 
 foreach ($id in $eventNames.Keys) {
     $label = $eventNames[$id]
-    $active = & $sysmonExe -s 2>&1 | Select-String "value=`"$id`""
+    $active = & $sysmonExe -s | Select-String "value=`"$id`""
     if ($active) {
-        Write-Ok "EventID $id — $label"
+        Write-Ok "EventID $id -$label"
     } else {
-        Write-Warn "EventID $id — $label (not found in schema, may still work)"
+        Write-Warn "EventID $id -$label (not found in schema, may still work)"
     }
 }
 
 Write-Host ""
 Write-Host "Setup complete. The profiler is ready to detect:" -ForegroundColor Green
-Write-Host "  • LSASS handle opens        (Sysmon EventID 10)" -ForegroundColor White
-Write-Host "  • Remote thread injection   (Sysmon EventID  8)" -ForegroundColor White
-Write-Host "  • Process hollowing         (Sysmon EventID 25)" -ForegroundColor White
+Write-Host "  *LSASS handle opens        (Sysmon EventID 10)" -ForegroundColor White
+Write-Host "  *Remote thread injection   (Sysmon EventID  8)" -ForegroundColor White
+Write-Host "  *Process hollowing         (Sysmon EventID 25)" -ForegroundColor White
 Write-Host ""
