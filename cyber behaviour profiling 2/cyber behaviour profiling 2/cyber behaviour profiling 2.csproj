@@ -17,7 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Cyber-behaviour-profiling.csproj" />
+    <ProjectReference Include="..\..\Cyber-behaviour-profiling.csproj"
+                      AdditionalProperties="UseAppHost=false" />
     <None Include="..\..\data.json" Link="data.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\sysmon-profiler.xml" Link="sysmon-profiler.xml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
