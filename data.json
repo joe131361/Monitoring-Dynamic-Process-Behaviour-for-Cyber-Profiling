@@ -110,7 +110,8 @@
       "\\appdata\\local\\temp\\",
       "\\windows\\temp\\",
       "c:\\programdata\\",
-      "c:\\users\\public\\"
+      "c:\\users\\public\\",
+      "\\desktop\\"
     ],
     "suspicious_overwrites": [
       "sethc.exe",

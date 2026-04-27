@@ -342,9 +342,6 @@ public static class Simulator
         await Spawn("powershell.exe", $"-EncodedCommand {encoded}", showWindow: true);
         await Task.Delay(1500, ct);
 
-        await Spawn("wmic.exe", "process call create \"cmd.exe /c echo WMI Spawned\"");
-        await Task.Delay(1000, ct);
-
         await Spawn("certutil.exe",
             "-hashfile \"" + Environment.GetCommandLineArgs()[0] + "\" MD5");
         await Task.Delay(1000, ct);
@@ -362,9 +359,6 @@ public static class Simulator
         using (var key = Registry.CurrentUser.OpenSubKey(runKey, writable: true))
             key?.DeleteValue(valName, throwOnMissingValue: false);
 
-        using var wl = Registry.LocalMachine.OpenSubKey(
-            @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon");
-        _ = wl?.GetValue("Userinit");
         await Task.Delay(500, ct);
     }
 
@@ -386,7 +380,19 @@ public static class Simulator
         foreach (var target in probeTargets)
         {
             ct.ThrowIfCancellationRequested();
-            try   { _ = File.Exists(target) || Directory.Exists(target); }
+            try
+            {
+                if (File.Exists(target))
+                {
+                    using var fs = File.Open(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    byte[] buf = new byte[Math.Min(fs.Length > 0 ? (int)fs.Length : 1, 32)];
+                    _ = await fs.ReadAsync(buf, ct);
+                }
+                else
+                {
+                    _ = Directory.Exists(target);
+                }
+            }
             catch { }
             await Task.Delay(200, ct);
         }
