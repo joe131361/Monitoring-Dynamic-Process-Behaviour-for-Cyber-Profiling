@@ -98,6 +98,7 @@ dotnet build TestApp/TestApp.csproj
 Run the profiler from an **elevated** PowerShell or Command Prompt:
 
 ```powershell
+cd ".\cyber behaviour profiling 2\cyber behaviour profiling 2"
 dotnet run
 ```
 
